@@ -125,7 +125,158 @@ try:
         if any(word in col.lower() for word in ["seat", "chair", "transfer"]):
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
 
-    tab1, tab2 , tab3 , tab4 = st.tabs(["📊 General Filter", "🚌 Situation Dahab"," situation siwa 🚌 ", " 🛏️ rooming list "])
+    tab_home, tab1, tab2, tab3, tab4 , tab5 = st.tabs([
+    "🏠 Home Overview", 
+    "📊 General Filter", 
+    "🚌 Situation Dahab", 
+    " situation siwa 🚌 ", 
+    " 🛏️ rooming list " ,
+    "Avalability 🏨"
+    ])
+
+
+    with tab_home:
+        st.markdown("## 🏠 Home Overview — Daily Destinations Snapshot")
+
+        # محاولة اكتشاف أعمدة مهمة تلقائياً
+        checkin_col = next((c for c in df.columns if "check" in c.lower() and "in" in c.lower()), None)
+        dest_col = next((c for c in df.columns if "dest" in c.lower() or "destination" in c.lower()), None)
+        seats_col = next((c for c in df.columns if any(w in c.lower() for w in ["seat", "no of seats", "no.seats", "seats", "no of seat"])), None)
+        from_col = next((c for c in df.columns if "from" in c.lower()), None)
+        nights_col = next((c for c in df.columns if "night" in c.lower()), None)
+        unpaid_col = next((c for c in df.columns if any(w in c.lower() for w in ["un paid", "unpaid", "balance", "due"])), None)
+        name_col = next((c for c in df.columns if "name" in c.lower()), None)
+        phone_col = next((c for c in df.columns if any(w in c.lower() for w in ["phone", "mobile", "tel", "number"])), None)
+        company_col = next((c for c in df.columns if any(w in c.lower() for w in ["company", "comp", "agency", "office"])), None)
+
+        if not checkin_col or not dest_col:
+            st.error("❌ لا أجد أعمدة 'check in' أو 'dest' في الملف — تأكد من أسماء الأعمدة في الشيت.")
+        else:
+            df[checkin_col] = pd.to_datetime(df[checkin_col], errors='coerce').dt.date
+            check_in_dates = sorted(df[checkin_col].dropna().unique())
+            selected_date = st.selectbox("📅 اختر تاريخ Check In لعرض الـ Overview", check_in_dates)
+
+            if selected_date:
+                day_df = df[df[checkin_col] == selected_date].copy()
+
+                if day_df.empty:
+                    st.warning("⚠️ لا توجد حجوزات في التاريخ المحدد.")
+                else:
+                    st.success(f"✅ {len(day_df)} حجز سيتم الدخول يوم {selected_date}")
+
+                    # تنظيف الأعمدة
+                    if seats_col:
+                        day_df[seats_col] = pd.to_numeric(day_df[seats_col], errors='coerce').fillna(0).astype(int)
+                    if nights_col:
+                        day_df[nights_col] = day_df[nights_col].astype(str).str.extract(r'(\d+)')[0].fillna("0")
+                    if from_col:
+                        day_df[from_col] = day_df[from_col].astype(str).str.title().fillna("Unknown")
+                    if unpaid_col:
+                        day_df[unpaid_col] = pd.to_numeric(day_df[unpaid_col].astype(str).str.replace(r'[^\d\.-]', '', regex=True), errors='coerce').fillna(0)
+
+                    # تجميع حسب الوجهة
+                    group = day_df.groupby(day_df[dest_col].astype(str).str.title(), dropna=True)
+
+                    cols_per_row = 3
+                    dest_list = list(group.groups.keys())
+
+                    def make_excel_from_df(dframe, sheet_name="Sheet1"):
+                        wb = Workbook()
+                        ws = wb.active
+                        ws.title = sheet_name
+                        for ci, colname in enumerate(dframe.columns, start=1):
+                            ws.cell(row=1, column=ci, value=colname)
+                        for ri, row in enumerate(dframe.values, start=2):
+                            for ci, v in enumerate(row, start=1):
+                                ws.cell(row=ri, column=ci, value=str(v))
+                        buf = BytesIO()
+                        wb.save(buf)
+                        buf.seek(0)
+                        return buf
+
+                    # Download كامل اليوم
+                    overall_buf = make_excel_from_df(day_df, sheet_name=f"Overview_{selected_date}")
+                    st.download_button(
+                        label="📘 Download Full Day Overview (Excel)",
+                        data=overall_buf,
+                        file_name=f"Overview_{selected_date}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+
+                    # عرض الوجهات في كروت
+                    rows = (len(dest_list) + cols_per_row - 1) // cols_per_row
+                    idx = 0
+                    for r in range(rows):
+                        cols = st.columns(cols_per_row)
+                        for c in cols:
+                            if idx >= len(dest_list):
+                                c.write("")
+                                idx += 1
+                                continue
+
+                            dest = dest_list[idx]
+                            dest_df = group.get_group(dest)
+                            idx += 1
+
+                            total_bookings = len(dest_df)
+                            unpaid_total = float(dest_df[unpaid_col].sum()) if unpaid_col else 0.0
+
+                            # seats & nights grouping
+                            seats_from = {}
+                            nights_from = {}
+                            if seats_col and from_col:
+                                for f, g in dest_df.groupby(from_col):
+                                    seats_from[f] = int(g[seats_col].sum())
+                                    if nights_col:
+                                        nights_from[f] = g[nights_col].value_counts().to_dict()
+
+                            # box HTML
+                            box_content = ""
+                            for f, seats in seats_from.items():
+                                box_content += f"<b>{f}:</b> {seats} seats<br>"
+                                if nights_col and f in nights_from:
+                                    for night, cnt in sorted(nights_from[f].items(), reverse=True):
+                                        box_content += f"&nbsp;&nbsp;{night} nights : {cnt}<br>"
+
+                            box_html = f"""
+                            <div style="border-radius:12px; padding:14px; margin:8px; background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(0,0,0,0.06)); border:1px solid rgba(255,255,255,0.06)">
+                                <h3 style="margin:0; color:#FFD700;">📍 {dest} 
+                                    <small style="color:#ADE8F4; font-weight:400; font-size:0.8em">
+                                        ({total_bookings} bookings)
+                                    </small>
+                                </h3>
+                                <p style="margin:6px 0 8px 0; color:#E6F7FF;">
+                                    <b>Unpaid Total:</b> {unpaid_total:,.2f}
+                                </p>
+                                <p style="margin:4px 0; color:#DDEFFD;">{box_content}</p>
+                            </div>
+                            """
+                            c.markdown(box_html, unsafe_allow_html=True)
+
+                            # Expander التفاصيل
+                            with c.expander(f"🔎 تفاصيل {dest} ({total_bookings}):"):
+
+                                possible_cols = [
+                                    name_col, phone_col, company_col,
+                                    seats_col, nights_col, unpaid_col,
+                                    from_col, checkin_col
+                                ]
+
+                                detail_cols = [
+                                    col for col in possible_cols
+                                    if col is not None and col in dest_df.columns
+                                ]
+
+                                st.dataframe(dest_df[detail_cols].reset_index(drop=True), use_container_width=True)
+
+                                buf_dest = make_excel_from_df(dest_df.reset_index(drop=True),
+                                                            sheet_name=f"{dest}_{selected_date}")
+                                st.download_button(
+                                    label=f"📥 Download {dest} Details (Excel)",
+                                    data=buf_dest,
+                                    file_name=f"{dest.replace(' ','_')}_Details_{selected_date}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                )
 
     # ✅---------------------- TAB 1 --------------------------
     with tab1:
@@ -523,6 +674,79 @@ try:
                             file_name=f"Rooming_List_{selected_hotel}_{selected_date}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
+
+    with tab5:
+        st.markdown("## 🏨 Hotel Room Availability — Daily Snapshot")
+
+        # اختيار التاريخ من التواريخ الموجودة في الشيت
+        available_dates = sorted(df[checkin_col].dropna().unique())
+        selected_date_avail = st.selectbox("📅 اختر تاريخ لعرض Availability", available_dates)
+
+        if selected_date_avail:
+            avail_df = df[df[checkin_col] == selected_date_avail].copy()
+            
+            if avail_df.empty:
+                st.warning("⚠️ لا توجد حجوزات في التاريخ المحدد.")
+            else:
+                # اكتشاف عمود نوع الغرفة والفندق
+                room_type_col = next((c for c in df.columns if any(w in c.lower() for w in ["room", "type", "category"])), None)
+                hotel_col = next((c for c in df.columns if any(w in c.lower() for w in ["hotel", "resort", "place"])), None)
+
+                if not hotel_col or not room_type_col:
+                    st.error("❌ لم أجد عمود الفندق أو نوع الغرفة في الملف.")
+                else:
+                    # تنظيف عمود الفندق
+                    avail_df[hotel_col] = avail_df[hotel_col].astype(str).str.strip().str.title()
+
+                    # تجميع حسب الفندق
+                    hotel_group = avail_df.groupby(hotel_col, dropna=False)
+                    
+                    cols_per_row = 3
+                    hotels_list = list(hotel_group.groups.keys())
+                    rows = (len(hotels_list) + cols_per_row - 1) // cols_per_row
+                    idx = 0
+
+                    for r in range(rows):
+                        cols = st.columns(cols_per_row)
+                        for c in cols:
+                            if idx >= len(hotels_list):
+                                idx += 1
+                                continue
+
+                            hotel = hotels_list[idx]
+                            hotel_data = hotel_group.get_group(hotel)
+                            idx += 1
+
+                            # عدد الغرف لكل نوع
+                            room_counts = hotel_data[room_type_col].value_counts().to_dict()
+                            room_summary = '<br>'.join([f"{v} {k}" for k, v in room_counts.items()])
+
+                            # HTML box للفندق
+                            # HTML box للفندق بلون مشابه للـ Home Overview
+                            box_html = f"""
+                            <div style="
+                                border-radius:12px;
+                                padding:14px;
+                                margin:8px;
+                                background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(0,0,0,0.06));
+                                border:1px solid rgba(255,255,255,0.06);
+                                color:white;
+                                font-weight:bold;
+                            ">
+                                <h4 style="margin:0; color:#FFD700;">🏨 {hotel}</h4>
+                                <p style="margin:6px 0 4px 0; line-height:1.4;">{room_summary}</p>
+                                <p style="margin:4px 0 0 0;"><b>Total Rooms:</b> {hotel_data.shape[0]}</p>
+                            </div>
+                                """
+
+                            c.markdown(box_html, unsafe_allow_html=True)
+
+                            # Expander للتفاصيل
+                            with c.expander(f"🔎 View bookings for {hotel}"):
+                                st.dataframe(hotel_data.reset_index(drop=True), use_container_width=True)
+
+
+
 
 
 except Exception as e:
