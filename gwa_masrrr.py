@@ -99,7 +99,7 @@ st.markdown(
 
 
 # 📊 رابط الشيت
-sheet_url = "https://docs.google.com/spreadsheets/d/1cVNvg3JO4JAZIV5uxWbOi65nJ0F8AGz1KYc3cytQ7AQ/gviz/tq?tqx=out:csv"
+sheet_url = "https://docs.google.com/spreadsheets/d/1pu0_BsqhJcQfsPo6R7AckvsnHhvMit6HmHH-dQDtO2s/gviz/tq?tqx=out:csv"
 
 try:
     df = pd.read_csv(sheet_url)
